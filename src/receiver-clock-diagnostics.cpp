@@ -55,6 +55,32 @@ void Diagnostics::clear_stage(StageAtomics &stage) noexcept
 	stage.pacing_anomalies.store(0, std::memory_order_relaxed);
 }
 
+void Diagnostics::clear_downstream_video(DownstreamVideoAtomics &state) noexcept
+{
+	state.sequence.store(0, std::memory_order_relaxed);
+	state.last_selected_timestamp_ns.store(0, std::memory_order_relaxed);
+	state.expected_interval_ns.store(0, std::memory_order_relaxed);
+	state.selected_timestamp_delta_ns.store(0, std::memory_order_relaxed);
+	state.selected_unique_advances.store(0, std::memory_order_relaxed);
+	state.selected_repeat_events.store(0, std::memory_order_relaxed);
+	state.selected_skip_events.store(0, std::memory_order_relaxed);
+	state.selected_skipped_frames.store(0, std::memory_order_relaxed);
+	state.selected_backward_events.store(0, std::memory_order_relaxed);
+	state.gap_observations.store(0, std::memory_order_relaxed);
+	state.last_gap_ns.store(0, std::memory_order_relaxed);
+	state.selected_minus_output_projected_ns.store(0, std::memory_order_relaxed);
+	state.selected_minus_output_gap_delta_ns.store(0, std::memory_order_relaxed);
+	state.gap_jump_threshold_ns.store(0, std::memory_order_relaxed);
+	state.gap_jump_events.store(0, std::memory_order_relaxed);
+	state.last_gap_jump_ns.store(0, std::memory_order_relaxed);
+	state.max_abs_gap_jump_ns.store(0, std::memory_order_relaxed);
+	state.min_gap_ns.store(0, std::memory_order_relaxed);
+	state.max_gap_ns.store(0, std::memory_order_relaxed);
+	state.last_gap_jump_wall_ns.store(0, std::memory_order_relaxed);
+	state.last_gap_jump_selected_timestamp_ns.store(0, std::memory_order_relaxed);
+	state.last_gap_jump_output_timestamp_ns.store(0, std::memory_order_relaxed);
+}
+
 void Diagnostics::publish(StageAtomics &stage, int64_t ndi_timestamp_100ns, int64_t ndi_timecode_100ns,
 			  uint64_t timestamp_ns, uint64_t wall_ns, uint32_t unit_a, uint32_t unit_b,
 			  uint32_t unit_c) noexcept
@@ -106,6 +132,53 @@ StageSnapshot Diagnostics::read_stage(const StageAtomics &stage) noexcept
 	return result;
 }
 
+DownstreamVideoSnapshot Diagnostics::read_downstream_video() const noexcept
+{
+	DownstreamVideoSnapshot result;
+	for (int attempt = 0; attempt < 4; ++attempt) {
+		const uint64_t before = downstream_video_.sequence.load(std::memory_order_acquire);
+		if (before & 1ULL)
+			continue;
+		result.expected_interval_ns =
+			downstream_video_.expected_interval_ns.load(std::memory_order_relaxed);
+		result.selected_timestamp_delta_ns =
+			downstream_video_.selected_timestamp_delta_ns.load(std::memory_order_relaxed);
+		result.selected_unique_advances =
+			downstream_video_.selected_unique_advances.load(std::memory_order_relaxed);
+		result.selected_repeat_events =
+			downstream_video_.selected_repeat_events.load(std::memory_order_relaxed);
+		result.selected_skip_events =
+			downstream_video_.selected_skip_events.load(std::memory_order_relaxed);
+		result.selected_skipped_frames =
+			downstream_video_.selected_skipped_frames.load(std::memory_order_relaxed);
+		result.selected_backward_events =
+			downstream_video_.selected_backward_events.load(std::memory_order_relaxed);
+		result.gap_observations = downstream_video_.gap_observations.load(std::memory_order_relaxed);
+		result.selected_minus_output_projected_ns =
+			downstream_video_.selected_minus_output_projected_ns.load(std::memory_order_relaxed);
+		result.selected_minus_output_gap_delta_ns =
+			downstream_video_.selected_minus_output_gap_delta_ns.load(std::memory_order_relaxed);
+		result.gap_jump_threshold_ns =
+			downstream_video_.gap_jump_threshold_ns.load(std::memory_order_relaxed);
+		result.gap_jump_events = downstream_video_.gap_jump_events.load(std::memory_order_relaxed);
+		result.last_gap_jump_ns = downstream_video_.last_gap_jump_ns.load(std::memory_order_relaxed);
+		result.max_abs_gap_jump_ns =
+			downstream_video_.max_abs_gap_jump_ns.load(std::memory_order_relaxed);
+		result.min_gap_ns = downstream_video_.min_gap_ns.load(std::memory_order_relaxed);
+		result.max_gap_ns = downstream_video_.max_gap_ns.load(std::memory_order_relaxed);
+		result.last_gap_jump_wall_ns =
+			downstream_video_.last_gap_jump_wall_ns.load(std::memory_order_relaxed);
+		result.last_gap_jump_selected_timestamp_ns =
+			downstream_video_.last_gap_jump_selected_timestamp_ns.load(std::memory_order_relaxed);
+		result.last_gap_jump_output_timestamp_ns =
+			downstream_video_.last_gap_jump_output_timestamp_ns.load(std::memory_order_relaxed);
+		const uint64_t after = downstream_video_.sequence.load(std::memory_order_acquire);
+		if (before == after && !(after & 1ULL))
+			break;
+	}
+	return result;
+}
+
 void Diagnostics::set_enabled(bool enabled, uint64_t wall_ns)
 {
 	if (enabled == enabled_.load(std::memory_order_acquire))
@@ -126,6 +199,7 @@ void Diagnostics::set_enabled(bool enabled, uint64_t wall_ns)
 	clear_stage(output_video_);
 	clear_stage(filtered_audio_);
 	clear_stage(selected_video_);
+	clear_downstream_video(downstream_video_);
 	{
 		std::lock_guard<std::mutex> lock(ring_mutex_);
 		ring_.assign(kCapacity, Sample{});
@@ -203,8 +277,105 @@ void Diagnostics::observe_filtered_audio(uint64_t timestamp_ns, uint64_t wall_ns
 
 void Diagnostics::observe_selected_video(uint64_t timestamp_ns, uint64_t wall_ns) noexcept
 {
-	if (enabled())
-		publish(selected_video_, 0, 0, timestamp_ns, wall_ns, 0, 0, 0);
+	if (!enabled())
+		return;
+
+	const StageSnapshot output = read_stage(output_video_);
+	publish(selected_video_, 0, 0, timestamp_ns, wall_ns, 0, 0, 0);
+
+	const int64_t nominal_step_100ns =
+		scheduler_.nominal_video_step_100ns.load(std::memory_order_relaxed);
+	uint64_t expected_interval_ns =
+		nominal_step_100ns > 0 ? static_cast<uint64_t>(nominal_step_100ns) * 100ULL : 0;
+	if (!expected_interval_ns && output.timestamp_delta_ns > 0)
+		expected_interval_ns = static_cast<uint64_t>(output.timestamp_delta_ns);
+
+	auto &state = downstream_video_;
+	const uint64_t previous_selected =
+		state.last_selected_timestamp_ns.load(std::memory_order_relaxed);
+	const int64_t selected_delta =
+		previous_selected ? signed_delta(timestamp_ns, previous_selected) : 0;
+	const uint64_t previous_gap_observations =
+		state.gap_observations.load(std::memory_order_relaxed);
+
+	const bool gap_valid = output.timestamp_ns && output.wall_ns;
+	int64_t gap_ns = 0;
+	int64_t gap_delta_ns = 0;
+	if (gap_valid) {
+		gap_ns = signed_delta(timestamp_ns, output.timestamp_ns) +
+			 signed_delta(output.wall_ns, wall_ns);
+		if (previous_gap_observations)
+			gap_delta_ns = gap_ns - state.last_gap_ns.load(std::memory_order_relaxed);
+	}
+
+	const uint64_t jump_threshold_ns =
+		std::max<uint64_t>(25000000ULL, expected_interval_ns + expected_interval_ns / 2ULL);
+
+	state.sequence.fetch_add(1, std::memory_order_acq_rel);
+	state.expected_interval_ns.store(expected_interval_ns, std::memory_order_relaxed);
+	state.selected_timestamp_delta_ns.store(selected_delta, std::memory_order_relaxed);
+
+	if (previous_selected) {
+		if (selected_delta == 0) {
+			state.selected_repeat_events.fetch_add(1, std::memory_order_relaxed);
+		} else if (selected_delta < 0) {
+			state.selected_backward_events.fetch_add(1, std::memory_order_relaxed);
+		} else {
+			state.selected_unique_advances.fetch_add(1, std::memory_order_relaxed);
+			if (expected_interval_ns &&
+			    static_cast<uint64_t>(selected_delta) >
+				    expected_interval_ns + expected_interval_ns / 2ULL) {
+				const uint64_t advanced_frames =
+					(static_cast<uint64_t>(selected_delta) + expected_interval_ns / 2ULL) /
+					expected_interval_ns;
+				if (advanced_frames > 1) {
+					state.selected_skip_events.fetch_add(1, std::memory_order_relaxed);
+					state.selected_skipped_frames.fetch_add(advanced_frames - 1,
+									 std::memory_order_relaxed);
+				}
+			}
+		}
+	}
+
+	if (gap_valid) {
+		state.selected_minus_output_projected_ns.store(gap_ns, std::memory_order_relaxed);
+		state.selected_minus_output_gap_delta_ns.store(gap_delta_ns, std::memory_order_relaxed);
+		state.gap_jump_threshold_ns.store(jump_threshold_ns, std::memory_order_relaxed);
+
+		if (!previous_gap_observations) {
+			state.min_gap_ns.store(gap_ns, std::memory_order_relaxed);
+			state.max_gap_ns.store(gap_ns, std::memory_order_relaxed);
+		} else {
+			state.min_gap_ns.store(
+				std::min(gap_ns, state.min_gap_ns.load(std::memory_order_relaxed)),
+				std::memory_order_relaxed);
+			state.max_gap_ns.store(
+				std::max(gap_ns, state.max_gap_ns.load(std::memory_order_relaxed)),
+				std::memory_order_relaxed);
+		}
+
+		const int64_t absolute_gap_delta = std::llabs(gap_delta_ns);
+		if (absolute_gap_delta >
+		    state.max_abs_gap_jump_ns.load(std::memory_order_relaxed))
+			state.max_abs_gap_jump_ns.store(absolute_gap_delta, std::memory_order_relaxed);
+
+		if (previous_gap_observations &&
+		    static_cast<uint64_t>(absolute_gap_delta) >= jump_threshold_ns) {
+			state.gap_jump_events.fetch_add(1, std::memory_order_relaxed);
+			state.last_gap_jump_ns.store(gap_delta_ns, std::memory_order_relaxed);
+			state.last_gap_jump_wall_ns.store(wall_ns, std::memory_order_relaxed);
+			state.last_gap_jump_selected_timestamp_ns.store(timestamp_ns,
+									    std::memory_order_relaxed);
+			state.last_gap_jump_output_timestamp_ns.store(output.timestamp_ns,
+									  std::memory_order_relaxed);
+		}
+
+		state.last_gap_ns.store(gap_ns, std::memory_order_relaxed);
+		state.gap_observations.fetch_add(1, std::memory_order_relaxed);
+	}
+
+	state.last_selected_timestamp_ns.store(timestamp_ns, std::memory_order_relaxed);
+	state.sequence.fetch_add(1, std::memory_order_release);
 }
 
 void Diagnostics::update_scheduler(const SchedulerSnapshot &snapshot) noexcept
@@ -287,6 +458,7 @@ void Diagnostics::sample(uint64_t wall_ns)
 	row.output_video = read_stage(output_video_);
 	row.filtered_audio = read_stage(filtered_audio_);
 	row.selected_video = read_stage(selected_video_);
+	row.downstream_video = read_downstream_video();
 	row.scheduler = read_scheduler();
 
 	std::lock_guard<std::mutex> lock(ring_mutex_);
@@ -353,6 +525,16 @@ void Diagnostics::write_csv_header(std::ostream &out)
 	write_stage_header(out, "output_video", "width", "height", "unused");
 	write_stage_header(out, "filtered_audio", "frames", "unused_a", "unused_b");
 	write_stage_header(out, "selected_video", "unused_a", "unused_b", "unused_c");
+	out << ",selected_video_expected_interval_ns,selected_video_timestamp_delta_ns"
+	       ",selected_video_unique_advances,selected_video_repeat_events,selected_video_skip_events"
+	       ",selected_video_skipped_frames,selected_video_backward_events,selected_output_gap_observations"
+	       ",selected_minus_output_live_projected_ns,selected_minus_output_live_gap_delta_ns"
+	       ",selected_output_gap_jump_threshold_ns,selected_output_gap_jump_events"
+	       ",selected_output_last_gap_jump_ns,selected_output_max_abs_gap_jump_ns"
+	       ",selected_output_min_gap_ns,selected_output_max_gap_ns"
+	       ",selected_output_last_gap_jump_wall_ns"
+	       ",selected_output_last_gap_jump_selected_timestamp_ns"
+	       ",selected_output_last_gap_jump_output_timestamp_ns";
 	out << ",mode,receiver_epoch_ns,next_audio_deadline_ns,next_video_deadline_ns,cumulative_audio_frames,video_ticks"
 	       ",audio_deadline_error_ns,video_deadline_error_ns,audio_catchups,video_catchups,repeated_video_frames"
 	       ",consecutive_video_repeats,recovered_video_repeats,video_repeat_debt_frames"
@@ -375,6 +557,15 @@ void Diagnostics::write_csv_row(std::ostream &out, const Sample &row)
 	write_stage(out, row.output_video);
 	write_stage(out, row.filtered_audio);
 	write_stage(out, row.selected_video);
+	const auto &d = row.downstream_video;
+	out << ',' << d.expected_interval_ns << ',' << d.selected_timestamp_delta_ns << ','
+	    << d.selected_unique_advances << ',' << d.selected_repeat_events << ',' << d.selected_skip_events << ','
+	    << d.selected_skipped_frames << ',' << d.selected_backward_events << ',' << d.gap_observations << ','
+	    << d.selected_minus_output_projected_ns << ',' << d.selected_minus_output_gap_delta_ns << ','
+	    << d.gap_jump_threshold_ns << ',' << d.gap_jump_events << ',' << d.last_gap_jump_ns << ','
+	    << d.max_abs_gap_jump_ns << ',' << d.min_gap_ns << ',' << d.max_gap_ns << ','
+	    << d.last_gap_jump_wall_ns << ',' << d.last_gap_jump_selected_timestamp_ns << ','
+	    << d.last_gap_jump_output_timestamp_ns;
 	const auto &s = row.scheduler;
 	out << ',' << s.mode << ',' << s.receiver_epoch_ns << ',' << s.next_audio_deadline_ns << ','
 	    << s.next_video_deadline_ns << ',' << s.cumulative_audio_frames << ',' << s.video_ticks << ','

@@ -65,6 +65,28 @@ struct SchedulerSnapshot {
 	int32_t ndi_queued_video_frames = 0;
 };
 
+struct DownstreamVideoSnapshot {
+	uint64_t expected_interval_ns = 0;
+	int64_t selected_timestamp_delta_ns = 0;
+	uint64_t selected_unique_advances = 0;
+	uint64_t selected_repeat_events = 0;
+	uint64_t selected_skip_events = 0;
+	uint64_t selected_skipped_frames = 0;
+	uint64_t selected_backward_events = 0;
+	uint64_t gap_observations = 0;
+	int64_t selected_minus_output_projected_ns = 0;
+	int64_t selected_minus_output_gap_delta_ns = 0;
+	uint64_t gap_jump_threshold_ns = 0;
+	uint64_t gap_jump_events = 0;
+	int64_t last_gap_jump_ns = 0;
+	int64_t max_abs_gap_jump_ns = 0;
+	int64_t min_gap_ns = 0;
+	int64_t max_gap_ns = 0;
+	uint64_t last_gap_jump_wall_ns = 0;
+	uint64_t last_gap_jump_selected_timestamp_ns = 0;
+	uint64_t last_gap_jump_output_timestamp_ns = 0;
+};
+
 // Callback-facing observations only publish atomics. A compact 250 ms flight
 // recorder is allocated only when the source's diagnostics checkbox is enabled.
 class Diagnostics {
@@ -139,6 +161,31 @@ private:
 		std::atomic<int32_t> ndi_queued_video_frames{0};
 	};
 
+	struct DownstreamVideoAtomics {
+		std::atomic<uint64_t> sequence{0};
+		std::atomic<uint64_t> last_selected_timestamp_ns{0};
+		std::atomic<uint64_t> expected_interval_ns{0};
+		std::atomic<int64_t> selected_timestamp_delta_ns{0};
+		std::atomic<uint64_t> selected_unique_advances{0};
+		std::atomic<uint64_t> selected_repeat_events{0};
+		std::atomic<uint64_t> selected_skip_events{0};
+		std::atomic<uint64_t> selected_skipped_frames{0};
+		std::atomic<uint64_t> selected_backward_events{0};
+		std::atomic<uint64_t> gap_observations{0};
+		std::atomic<int64_t> last_gap_ns{0};
+		std::atomic<int64_t> selected_minus_output_projected_ns{0};
+		std::atomic<int64_t> selected_minus_output_gap_delta_ns{0};
+		std::atomic<uint64_t> gap_jump_threshold_ns{0};
+		std::atomic<uint64_t> gap_jump_events{0};
+		std::atomic<int64_t> last_gap_jump_ns{0};
+		std::atomic<int64_t> max_abs_gap_jump_ns{0};
+		std::atomic<int64_t> min_gap_ns{0};
+		std::atomic<int64_t> max_gap_ns{0};
+		std::atomic<uint64_t> last_gap_jump_wall_ns{0};
+		std::atomic<uint64_t> last_gap_jump_selected_timestamp_ns{0};
+		std::atomic<uint64_t> last_gap_jump_output_timestamp_ns{0};
+	};
+
 	struct Sample {
 		uint64_t wall_ns = 0;
 		uint64_t session = 0;
@@ -152,16 +199,19 @@ private:
 		StageSnapshot output_video;
 		StageSnapshot filtered_audio;
 		StageSnapshot selected_video;
+		DownstreamVideoSnapshot downstream_video;
 		SchedulerSnapshot scheduler;
 	};
 
 	static int64_t signed_delta(uint64_t current, uint64_t previous) noexcept;
 	static const char *event_name(Event event) noexcept;
 	static void clear_stage(StageAtomics &stage) noexcept;
+	static void clear_downstream_video(DownstreamVideoAtomics &state) noexcept;
 	static void publish(StageAtomics &stage, int64_t ndi_timestamp_100ns, int64_t ndi_timecode_100ns,
 			    uint64_t timestamp_ns, uint64_t wall_ns, uint32_t unit_a, uint32_t unit_b,
 			    uint32_t unit_c) noexcept;
 	static StageSnapshot read_stage(const StageAtomics &stage) noexcept;
+	DownstreamVideoSnapshot read_downstream_video() const noexcept;
 	static void write_csv_header(std::ostream &out);
 	static void write_csv_row(std::ostream &out, const Sample &row);
 	SchedulerSnapshot read_scheduler() const noexcept;
@@ -177,6 +227,7 @@ private:
 	StageAtomics output_video_;
 	StageAtomics filtered_audio_;
 	StageAtomics selected_video_;
+	DownstreamVideoAtomics downstream_video_;
 	SchedulerAtomics scheduler_;
 
 	mutable std::mutex ring_mutex_;
