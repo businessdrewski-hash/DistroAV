@@ -747,56 +747,7 @@ The implementation remains experimental until it receives clean CI results, addi
 
 ---
 
-## 23. Files to Attach for Maintainer Review
-
-- [ ] This `REPRODUCTION.md`
-- [ ] Stock 60.775-minute CSV
-- [ ] Receiver-Paced 96.079-minute CSV
-- [ ] Separate-source regression CSV
-- [ ] Combined-source control CSV
-- [ ] Initial shared-clock CSV
-- [ ] 26.5-minute shared-clock CSV
-- [ ] 108-minute buffered downstream-jump CSV
-- [ ] 22.7-minute unbuffered CSV
-- [ ] 61.7-minute unbuffered stress CSV
-- [ ] Sender-overload OBS log
-- [ ] Receiver OBS logs
-- [ ] Exact minimal source diff
-- [ ] Analyzer script and command
-- [ ] Sender and receiver settings screenshots
-- [ ] Short recording showing stock drift
-- [ ] Long recording showing final behavior
-- [ ] Research branch commit SHA
-- [ ] Minimal branch commit SHA after its build passes
-
-Suggested comparison:
-
-```text
-stock base:
-038d9d6bf8bff36018ffac8ddc3d15f3bb3ef9e8
-
-research branch:
-receiver-clock-lab
-```
-
----
-
-## 24. Questions for DistroAV Maintainers
-
-1. Is a process-wide shared receiver epoch the correct ownership level for separate DistroAV source instances?
-2. Should Receiver-Paced behavior remain a selectable public mode, become an internal FrameSync implementation detail, or replace the affected path?
-3. Are there NDI FrameSync timing guarantees that should change the bounded catch-up or repeated-frame policy?
-4. Should newly created Receiver-Paced sources join at the next audio block/video tick as implemented?
-5. Is automatically enabling `obs_source_set_async_unbuffered(..., true)` appropriate for Receiver-Paced mode?
-6. Should the NDI decode/color-format latency option remain independent from OBS async-video buffering?
-7. Should exact rational FPS timing use OBS's numerator and denominator directly throughout this receive path?
-8. Which diagnostics should remain in a production implementation after the research probes are removed?
-9. Which frame rates, sample rates, operating systems, and source layouts should be tested before upstream integration?
-10. Would maintainers prefer the minimal two-file patch or the larger research branch with selectable modes and diagnostics?
-
----
-
-## 25. Final Conclusion
+## 23. Final Conclusion
 
 The original setup repeatedly accumulated approximately **50 ms of A/V drift every 25 minutes**. A formal stock capture measured **-109.540 ms over 60.775 minutes**, equivalent to approximately **-1.802 ms/minute**.
 
