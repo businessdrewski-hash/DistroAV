@@ -163,6 +163,24 @@ std::mutex clocklab_registry_mutex;
 std::unordered_map<uint64_t, std::shared_ptr<distroav::clocklab::Diagnostics>> clocklab_registry;
 std::atomic<uint64_t> clocklab_next_token{1};
 
+// Receiver-paced sources keep separate NDI receivers and FrameSync instances,
+// but generate OBS timestamps inside one process-wide monotonic clock domain.
+std::mutex receiver_clock_domain_mutex;
+uint64_t receiver_clock_domain_epoch_ns = 0;
+
+uint64_t receiver_clock_shared_epoch(uint64_t now_ns)
+{
+	std::lock_guard<std::mutex> lock(receiver_clock_domain_mutex);
+	if (!receiver_clock_domain_epoch_ns)
+		receiver_clock_domain_epoch_ns = now_ns + 100000000ULL;
+	return receiver_clock_domain_epoch_ns;
+}
+
+uint64_t ceil_div_u64(uint64_t value, uint64_t divisor)
+{
+	return value / divisor + (value % divisor != 0);
+}
+
 uint64_t register_clocklab_diagnostics(const std::shared_ptr<distroav::clocklab::Diagnostics> &diagnostics)
 {
 	const uint64_t token = clocklab_next_token.fetch_add(1, std::memory_order_relaxed);
@@ -577,6 +595,8 @@ void ndi_source_thread_process_video2(ndi_source_t *source, NDIlib_video_frame_v
 struct receiver_clock_schedule_t {
 	uint32_t sample_rate = 48000;
 	uint32_t audio_block_frames = 1024;
+	uint32_t video_fps_num = 60;
+	uint32_t video_fps_den = 1;
 	uint64_t video_interval_ns = 16666667;
 	uint64_t receiver_epoch_ns = 0;
 	uint64_t next_audio_deadline_ns = 0;
@@ -606,14 +626,36 @@ struct receiver_clock_schedule_t {
 		if (obs_get_audio_info(&audio_info) && audio_info.samples_per_sec)
 			sample_rate = audio_info.samples_per_sec;
 		obs_video_info video_info = {};
-		if (obs_get_video_info(&video_info) && video_info.fps_num && video_info.fps_den)
-			video_interval_ns = static_cast<uint64_t>(video_info.fps_den) * 1000000000ULL /
-					    static_cast<uint64_t>(video_info.fps_num);
-		receiver_epoch_ns = now_ns + 100000000ULL;
-		next_audio_deadline_ns = receiver_epoch_ns;
-		next_video_deadline_ns = receiver_epoch_ns;
-		cumulative_audio_frames = 0;
-		video_ticks = 0;
+		if (obs_get_video_info(&video_info) && video_info.fps_num && video_info.fps_den) {
+			video_fps_num = video_info.fps_num;
+			video_fps_den = video_info.fps_den;
+			video_interval_ns = static_cast<uint64_t>(video_fps_den) * 1000000000ULL /
+					    static_cast<uint64_t>(video_fps_num);
+		}
+
+		receiver_epoch_ns = receiver_clock_shared_epoch(now_ns);
+
+		// Join the shared domain at the first whole audio block and video tick
+		// that are not earlier than the local receiver startup guard time.
+		const uint64_t join_ns = now_ns + 100000000ULL;
+		const uint64_t elapsed_ns =
+			join_ns > receiver_epoch_ns ? join_ns - receiver_epoch_ns : 0;
+
+		const uint64_t elapsed_audio_frames =
+			elapsed_ns * static_cast<uint64_t>(sample_rate) / 1000000000ULL;
+		const uint64_t audio_blocks =
+			ceil_div_u64(elapsed_audio_frames, static_cast<uint64_t>(audio_block_frames));
+		cumulative_audio_frames =
+			audio_blocks * static_cast<uint64_t>(audio_block_frames);
+
+		const uint64_t video_tick_den =
+			static_cast<uint64_t>(video_fps_den) * 1000000000ULL;
+		const uint64_t video_tick_num =
+			elapsed_ns * static_cast<uint64_t>(video_fps_num);
+		video_ticks = ceil_div_u64(video_tick_num, video_tick_den);
+
+		next_audio_deadline_ns = audio_timestamp_ns();
+		next_video_deadline_ns = video_timestamp_ns();
 		audio_catchups = 0;
 		video_catchups = 0;
 		repeated_video_frames = 0;
@@ -637,7 +679,14 @@ struct receiver_clock_schedule_t {
 		return receiver_epoch_ns + cumulative_audio_frames * 1000000000ULL / sample_rate;
 	}
 
-	uint64_t video_timestamp_ns() const { return receiver_epoch_ns + video_ticks * video_interval_ns; }
+	uint64_t video_timestamp_ns() const
+	{
+		// Recalculate from the exact rational frame rate instead of repeatedly
+		// accumulating a truncated integer nanosecond interval.
+		return receiver_epoch_ns +
+		       video_ticks * static_cast<uint64_t>(video_fps_den) * 1000000000ULL /
+			       static_cast<uint64_t>(video_fps_num);
+	}
 
 	void advance_audio(uint32_t frames)
 	{
@@ -1022,8 +1071,12 @@ void *ndi_source_thread(void *data)
 
 				const uint64_t video_now_ns = os_gettime_ns();
 				if (video_now_ns >= receiver_clock.next_video_deadline_ns) {
-					const uint64_t missed = (video_now_ns - receiver_clock.next_video_deadline_ns) /
-								receiver_clock.video_interval_ns;
+					const uint64_t late_ns =
+						video_now_ns - receiver_clock.next_video_deadline_ns;
+					const uint64_t missed =
+						late_ns * static_cast<uint64_t>(receiver_clock.video_fps_num) /
+						(static_cast<uint64_t>(receiver_clock.video_fps_den) *
+						 1000000000ULL);
 					if (missed) {
 						receiver_clock.video_ticks += missed;
 						receiver_clock.video_catchups += missed;
@@ -1516,8 +1569,11 @@ void ndi_source_update(void *data, obs_data_t *settings)
 		}
 	}
 
-	// Disable OBS buffering only for "Lowest" latency mode
-	const bool is_unbuffered = (s->config.latency == PROP_LATENCY_LOWEST);
+	// Receiver-paced video already owns playout timing. Keep OBS from building
+	// a second stale async-video queue even when the NDI latency setting is not Lowest.
+	const bool receiver_paced =
+		s->config.receiver_clock_mode == PROP_RECEIVER_CLOCK_RECEIVER_PACED;
+	const bool is_unbuffered = receiver_paced || (s->config.latency == PROP_LATENCY_LOWEST);
 	obs_source_set_async_unbuffered(obs_source, is_unbuffered);
 
 	s->config.audio_enabled = obs_data_get_bool(settings, PROP_AUDIO);

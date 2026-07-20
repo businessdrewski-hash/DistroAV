@@ -1,7 +1,6 @@
 > [!CAUTION]
-> This branch is the experimental **DistroAV Receiver Clock Lab 6.2.1.1**, not a production DistroAV release. It keeps
-> normal single-source NDI audio/video and adds an isolated receiver-clock experiment plus end-to-end diagnostics. Start
-> with [the lab overview](docs/receiver-clock-lab/README.md) and [test procedure](docs/receiver-clock-lab/REPRODUCTION.md).
+> This branch is the experimental **DistroAV Receiver Clock Lab 6.2.1.2**, not a production DistroAV release. It adds receiver-paced timestamps, one shared clock for separate receiver-paced NDI sources, automatic unbuffered OBS video in Receiver-Paced mode, and end-to-end diagnostics. Start with the [overview](docs/receiver-clock-lab/README.md), [implementation notes](docs/receiver-clock-lab/IMPLEMENTATION.md), and [test guide](docs/receiver-clock-lab/TESTING.md).
+
 
 <div align="center">
 <h1>DistroAV</h1>

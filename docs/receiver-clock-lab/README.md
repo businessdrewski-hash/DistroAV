@@ -1,41 +1,34 @@
 # DistroAV Receiver Clock Lab
 
-This branch is an isolated experiment based directly on DistroAV 6.2.1. It does not contain Multichannel Bridge,
-Sync Guardian, linked audio filters, PPM correction, or sender track-combining code. The NDI source remains one normal
-audio/video OBS source.
+This branch is an experimental DistroAV 6.2.1 fork for testing NDI A/V clock behavior inside OBS. It does not combine audio tracks and does not alter DistroAV output features.
 
-The experiment tests one hypothesis: DistroAV currently forwards a sender-paced NDI timeline into an OBS receiver whose
-asynchronous video path is paced by the receiver clock. A shared receiver-clocked NDI FrameSync pull should prevent the
-two timelines from diverging.
+## What it changes
 
-## Comparison modes
+Receiver-Paced mode uses NDI FrameSync for frame selection, but replaces incoming sender timestamps with timestamps generated from OBS's local monotonic clock.
 
-The NDI Source properties expose three modes in the same binary:
+All Receiver-Paced source instances share one process-wide clock origin. A video-only source, desktop-audio source, and mic source therefore write timestamps onto the same receiver timeline instead of starting three private clocks.
 
-1. **Stock DistroAV: direct receive** — unchanged `recv_capture_v3` reference path.
-2. **Stock DistroAV: existing FrameSync** — unchanged DistroAV 6.2.1 polling path.
-3. **Receiver Clock Lab: OBS-paced FrameSync** — pulls audio and video on absolute receiver deadlines and assigns both
-   outputs one receiver-clock epoch.
+Receiver-Paced video is also always submitted to OBS as unbuffered async video. This prevents OBS's second video queue from slowly accumulating delay or remaining late after a system hitch. The normal Latency dropdown still controls the NDI receiver color-format choice; Receiver-Paced mode only forces the OBS unbuffered behavior.
 
-No mode applies an adaptive downstream sync correction. Changing the mode rebuilds the NDI receiver so each test begins
-with a fresh timing epoch.
+## Modes
 
-## What the new mode changes
+- **Stock DistroAV: direct receive** - unchanged DistroAV direct capture path.
+- **Stock DistroAV: existing FrameSync** - unchanged DistroAV FrameSync reference path.
+- **Receiver Clock Lab: OBS-paced FrameSync** - shared receiver clock, receiver-generated timestamps, bounded catch-up, and unbuffered OBS video.
 
-- Audio is pulled at the OBS audio sample rate in receiver-scheduled blocks.
-- Video is pulled at the OBS video cadence.
-- Both output timestamps are derived from the same receiver epoch.
-- Late video deadlines skip receiver ticks rather than accumulating schedule error.
-- Late audio deadlines request a bounded larger block to catch up without changing the long-term timeline.
-- Original NDI timestamp and timecode remain in diagnostics but do not schedule OBS in the receiver-paced mode.
+## Measured results
 
-## Current status
+| Test | Measured drift |
+|---|---:|
+| Stock single-source DistroAV | about 1.8 to 2.0 ms/min |
+| First receiver-paced single-source test | about 0.001 ms/min |
+| Separate receiver-paced sources before shared clock | about 4.6 to 5.2 ms/min |
+| Separate sources after shared clock | about 0.0004 to 0.0007 ms/min at DistroAV output |
+| Lowest-latency OBS-selected video tests | about 0.002 to 0.0025 ms/min, with no persistent jumps |
 
-This is diagnostic pre-release code. It must be validated against the two stock reference modes before proposing an
-upstream production change.
+The remaining repeat counter describes temporary FrameSync reuse of a source frame. Recovered repeat debt does not create long-term delay, though a clustered burst can still appear as a short motion hitch.
 
-The package deliberately retains DistroAV's module and source IDs. It replaces stock DistroAV for a controlled test and
-cannot be loaded beside stock DistroAV in the same OBS installation. It is fully separate from Multichannel Bridge and
-Sync Guardian, which may remain uninstalled during this test.
+## Files
 
-See [REPRODUCTION.md](REPRODUCTION.md), [DIAGNOSTICS.md](DIAGNOSTICS.md), and [DESIGN.md](DESIGN.md).
+- [IMPLEMENTATION.md](IMPLEMENTATION.md) - every source-code and project change from stock DistroAV 6.2.1.
+- [TESTING.md](TESTING.md) - build, setup, logging, and validation procedure.
