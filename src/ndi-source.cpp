@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <fstream>
 #include <memory>
 #include <mutex>
@@ -585,9 +586,18 @@ struct receiver_clock_schedule_t {
 	uint64_t audio_catchups = 0;
 	uint64_t video_catchups = 0;
 	uint64_t repeated_video_frames = 0;
+	uint64_t consecutive_video_repeats = 0;
+	uint64_t recovered_video_repeats = 0;
+	uint64_t video_repeat_debt_frames = 0;
+	uint64_t max_video_repeat_debt_frames = 0;
+	uint64_t source_video_skipped_frames = 0;
 	uint64_t empty_audio_pulls = 0;
 	uint64_t empty_video_pulls = 0;
 	int64_t last_video_ndi_timestamp = 0;
+	int64_t last_video_ndi_timecode = 0;
+	int64_t last_video_identity_100ns = 0;
+	int64_t source_video_identity_delta_100ns = 0;
+	int64_t nominal_video_step_100ns = 0;
 	uint64_t last_diagnostic_sample_ns = 0;
 
 	void reset(uint64_t now_ns)
@@ -607,9 +617,18 @@ struct receiver_clock_schedule_t {
 		audio_catchups = 0;
 		video_catchups = 0;
 		repeated_video_frames = 0;
+		consecutive_video_repeats = 0;
+		recovered_video_repeats = 0;
+		video_repeat_debt_frames = 0;
+		max_video_repeat_debt_frames = 0;
+		source_video_skipped_frames = 0;
 		empty_audio_pulls = 0;
 		empty_video_pulls = 0;
 		last_video_ndi_timestamp = 0;
+		last_video_ndi_timecode = 0;
+		last_video_identity_100ns = 0;
+		source_video_identity_delta_100ns = 0;
+		nominal_video_step_100ns = 0;
 		last_diagnostic_sample_ns = 0;
 	}
 
@@ -690,6 +709,15 @@ void *ndi_source_thread(void *data)
 		snapshot.audio_catchups = receiver_clock.audio_catchups;
 		snapshot.video_catchups = receiver_clock.video_catchups;
 		snapshot.repeated_video_frames = receiver_clock.repeated_video_frames;
+		snapshot.consecutive_video_repeats = receiver_clock.consecutive_video_repeats;
+		snapshot.recovered_video_repeats = receiver_clock.recovered_video_repeats;
+		snapshot.video_repeat_debt_frames = receiver_clock.video_repeat_debt_frames;
+		snapshot.max_video_repeat_debt_frames = receiver_clock.max_video_repeat_debt_frames;
+		snapshot.source_video_skipped_frames = receiver_clock.source_video_skipped_frames;
+		snapshot.last_video_ndi_timestamp_100ns = receiver_clock.last_video_ndi_timestamp;
+		snapshot.last_video_ndi_timecode_100ns = receiver_clock.last_video_ndi_timecode;
+		snapshot.source_video_identity_delta_100ns = receiver_clock.source_video_identity_delta_100ns;
+		snapshot.nominal_video_step_100ns = receiver_clock.nominal_video_step_100ns;
 		snapshot.empty_audio_pulls = receiver_clock.empty_audio_pulls;
 		snapshot.empty_video_pulls = receiver_clock.empty_video_pulls;
 		if (ndi_receiver) {
@@ -1006,9 +1034,40 @@ void *ndi_source_thread(void *data)
 					ndiLib->framesync_capture_video(ndi_frame_sync, &video_frame,
 									NDIlib_frame_format_type_progressive);
 					if (video_frame.p_data) {
-						if (receiver_clock.last_video_ndi_timestamp == video_frame.timestamp)
-							++receiver_clock.repeated_video_frames;
+						if (video_frame.frame_rate_N > 0 && video_frame.frame_rate_D > 0) {
+							receiver_clock.nominal_video_step_100ns =
+								static_cast<int64_t>(video_frame.frame_rate_D) * 10000000LL /
+								static_cast<int64_t>(video_frame.frame_rate_N);
+						}
+						const int64_t source_identity_100ns =
+							video_frame.timestamp > 0 ? video_frame.timestamp : video_frame.timecode;
+						if (receiver_clock.last_video_identity_100ns && source_identity_100ns) {
+							const int64_t delta_100ns = source_identity_100ns - receiver_clock.last_video_identity_100ns;
+							receiver_clock.source_video_identity_delta_100ns = delta_100ns;
+							if (delta_100ns <= 0) {
+								++receiver_clock.repeated_video_frames;
+								++receiver_clock.consecutive_video_repeats;
+								++receiver_clock.video_repeat_debt_frames;
+								receiver_clock.max_video_repeat_debt_frames =
+									std::max(receiver_clock.max_video_repeat_debt_frames, receiver_clock.video_repeat_debt_frames);
+							} else {
+								uint64_t source_advance_frames = 1;
+								if (receiver_clock.nominal_video_step_100ns > 0) {
+									source_advance_frames = static_cast<uint64_t>(std::max<int64_t>(
+										1, std::llround(static_cast<double>(delta_100ns) / receiver_clock.nominal_video_step_100ns)));
+								}
+								const uint64_t skipped_source_frames = source_advance_frames > 1 ? source_advance_frames - 1 : 0;
+								receiver_clock.source_video_skipped_frames += skipped_source_frames;
+								const uint64_t recovered = std::min(receiver_clock.video_repeat_debt_frames, skipped_source_frames);
+								receiver_clock.video_repeat_debt_frames -= recovered;
+								receiver_clock.recovered_video_repeats += recovered;
+								receiver_clock.consecutive_video_repeats = 0;
+							}
+						}
 						receiver_clock.last_video_ndi_timestamp = video_frame.timestamp;
+						receiver_clock.last_video_ndi_timecode = video_frame.timecode;
+						if (source_identity_100ns)
+							receiver_clock.last_video_identity_100ns = source_identity_100ns;
 						ndi_source_thread_process_video2(s, &video_frame, &obs_video_frame,
 										 receiver_clock.video_timestamp_ns());
 					} else {

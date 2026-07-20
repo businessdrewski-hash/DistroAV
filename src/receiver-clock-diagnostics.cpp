@@ -220,6 +220,15 @@ void Diagnostics::update_scheduler(const SchedulerSnapshot &snapshot) noexcept
 	scheduler_.audio_catchups.store(snapshot.audio_catchups, std::memory_order_relaxed);
 	scheduler_.video_catchups.store(snapshot.video_catchups, std::memory_order_relaxed);
 	scheduler_.repeated_video_frames.store(snapshot.repeated_video_frames, std::memory_order_relaxed);
+	scheduler_.consecutive_video_repeats.store(snapshot.consecutive_video_repeats, std::memory_order_relaxed);
+	scheduler_.recovered_video_repeats.store(snapshot.recovered_video_repeats, std::memory_order_relaxed);
+	scheduler_.video_repeat_debt_frames.store(snapshot.video_repeat_debt_frames, std::memory_order_relaxed);
+	scheduler_.max_video_repeat_debt_frames.store(snapshot.max_video_repeat_debt_frames, std::memory_order_relaxed);
+	scheduler_.source_video_skipped_frames.store(snapshot.source_video_skipped_frames, std::memory_order_relaxed);
+	scheduler_.last_video_ndi_timestamp_100ns.store(snapshot.last_video_ndi_timestamp_100ns, std::memory_order_relaxed);
+	scheduler_.last_video_ndi_timecode_100ns.store(snapshot.last_video_ndi_timecode_100ns, std::memory_order_relaxed);
+	scheduler_.source_video_identity_delta_100ns.store(snapshot.source_video_identity_delta_100ns, std::memory_order_relaxed);
+	scheduler_.nominal_video_step_100ns.store(snapshot.nominal_video_step_100ns, std::memory_order_relaxed);
 	scheduler_.empty_audio_pulls.store(snapshot.empty_audio_pulls, std::memory_order_relaxed);
 	scheduler_.empty_video_pulls.store(snapshot.empty_video_pulls, std::memory_order_relaxed);
 	scheduler_.ndi_total_audio_frames.store(snapshot.ndi_total_audio_frames, std::memory_order_relaxed);
@@ -244,6 +253,15 @@ SchedulerSnapshot Diagnostics::read_scheduler() const noexcept
 	result.audio_catchups = scheduler_.audio_catchups.load(std::memory_order_relaxed);
 	result.video_catchups = scheduler_.video_catchups.load(std::memory_order_relaxed);
 	result.repeated_video_frames = scheduler_.repeated_video_frames.load(std::memory_order_relaxed);
+	result.consecutive_video_repeats = scheduler_.consecutive_video_repeats.load(std::memory_order_relaxed);
+	result.recovered_video_repeats = scheduler_.recovered_video_repeats.load(std::memory_order_relaxed);
+	result.video_repeat_debt_frames = scheduler_.video_repeat_debt_frames.load(std::memory_order_relaxed);
+	result.max_video_repeat_debt_frames = scheduler_.max_video_repeat_debt_frames.load(std::memory_order_relaxed);
+	result.source_video_skipped_frames = scheduler_.source_video_skipped_frames.load(std::memory_order_relaxed);
+	result.last_video_ndi_timestamp_100ns = scheduler_.last_video_ndi_timestamp_100ns.load(std::memory_order_relaxed);
+	result.last_video_ndi_timecode_100ns = scheduler_.last_video_ndi_timecode_100ns.load(std::memory_order_relaxed);
+	result.source_video_identity_delta_100ns = scheduler_.source_video_identity_delta_100ns.load(std::memory_order_relaxed);
+	result.nominal_video_step_100ns = scheduler_.nominal_video_step_100ns.load(std::memory_order_relaxed);
 	result.empty_audio_pulls = scheduler_.empty_audio_pulls.load(std::memory_order_relaxed);
 	result.empty_video_pulls = scheduler_.empty_video_pulls.load(std::memory_order_relaxed);
 	result.ndi_total_audio_frames = scheduler_.ndi_total_audio_frames.load(std::memory_order_relaxed);
@@ -337,6 +355,9 @@ void Diagnostics::write_csv_header(std::ostream &out)
 	write_stage_header(out, "selected_video", "unused_a", "unused_b", "unused_c");
 	out << ",mode,receiver_epoch_ns,next_audio_deadline_ns,next_video_deadline_ns,cumulative_audio_frames,video_ticks"
 	       ",audio_deadline_error_ns,video_deadline_error_ns,audio_catchups,video_catchups,repeated_video_frames"
+	       ",consecutive_video_repeats,recovered_video_repeats,video_repeat_debt_frames"
+	       ",max_video_repeat_debt_frames,source_video_skipped_frames,last_video_ndi_timestamp_100ns"
+	       ",last_video_ndi_timecode_100ns,source_video_identity_delta_100ns,nominal_video_step_100ns"
 	       ",empty_audio_pulls,empty_video_pulls,ndi_total_audio_frames,ndi_total_video_frames"
 	       ",ndi_dropped_audio_frames,ndi_dropped_video_frames,ndi_queued_audio_frames,ndi_queued_video_frames"
 	       ",capture_video_minus_capture_audio_projected_ns"
@@ -358,8 +379,13 @@ void Diagnostics::write_csv_row(std::ostream &out, const Sample &row)
 	out << ',' << s.mode << ',' << s.receiver_epoch_ns << ',' << s.next_audio_deadline_ns << ','
 	    << s.next_video_deadline_ns << ',' << s.cumulative_audio_frames << ',' << s.video_ticks << ','
 	    << s.audio_deadline_error_ns << ',' << s.video_deadline_error_ns << ',' << s.audio_catchups << ','
-	    << s.video_catchups << ',' << s.repeated_video_frames << ',' << s.empty_audio_pulls << ','
-	    << s.empty_video_pulls << ',' << s.ndi_total_audio_frames << ',' << s.ndi_total_video_frames << ','
+	    << s.video_catchups << ',' << s.repeated_video_frames << ',' << s.consecutive_video_repeats << ','
+	    << s.recovered_video_repeats << ',' << s.video_repeat_debt_frames << ','
+	    << s.max_video_repeat_debt_frames << ',' << s.source_video_skipped_frames << ','
+	    << s.last_video_ndi_timestamp_100ns << ',' << s.last_video_ndi_timecode_100ns << ','
+	    << s.source_video_identity_delta_100ns << ',' << s.nominal_video_step_100ns << ','
+	    << s.empty_audio_pulls << ',' << s.empty_video_pulls << ',' << s.ndi_total_audio_frames << ','
+	    << s.ndi_total_video_frames << ','
 	    << s.ndi_dropped_audio_frames << ',' << s.ndi_dropped_video_frames << ',' << s.ndi_queued_audio_frames
 	    << ',' << s.ndi_queued_video_frames << ',' << projected_relation(row.capture_video, row.capture_audio)
 	    << ',' << projected_relation(row.output_video, row.output_audio) << ','
