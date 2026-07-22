@@ -95,7 +95,7 @@ jobs:
           "- Probe lifecycle: deferred dedupe on source create/load, exact one video/audio probe only while diagnostics are enabled" >> $env:GITHUB_STEP_SUMMARY
           "- Packaged DLL marker verification: passed" >> $env:GITHUB_STEP_SUMMARY
           "- Windows installer: ${{ steps.installer.outputs.installerName }}" >> $env:GITHUB_STEP_SUMMARY
-          "- Installer SHA-256: `${{ steps.installer.outputs.installerSha256 }}`" >> $env:GITHUB_STEP_SUMMARY
+          "- Installer SHA-256: ${{ steps.installer.outputs.installerSha256 }}" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload standard Windows zip
         uses: actions/upload-artifact@v7
