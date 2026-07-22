@@ -57,15 +57,35 @@ jobs:
           target: x64
           config: RelWithDebInfo
 
-      - name: Package plugin
+      - name: Package plugin and Windows installer
         uses: ./.github/actions/package-plugin
         with:
           target: x64
           config: RelWithDebInfo
-          package: false
+          package: true
 
       - name: Verify diagnostics code is linked into the packaged DLL
         run: python tools/verify-receiver-clock-live-diagnostics-build.py
+
+      - name: Verify Windows installer and write checksum
+        id: installer
+        run: |
+          $Pattern = "${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*-Installer.exe"
+          $Installers = @(Get-ChildItem -Path release -Filter $Pattern -File)
+          if ($Installers.Count -ne 1) {
+            throw "Expected exactly one Windows installer matching release/$Pattern, found $($Installers.Count)"
+          }
+          $Installer = $Installers[0]
+          if ($Installer.Length -lt 1MB) {
+            throw "Windows installer is unexpectedly small: $($Installer.FullName) ($($Installer.Length) bytes)"
+          }
+          $Hash = Get-FileHash -Path $Installer.FullName -Algorithm SHA256
+          $ChecksumPath = "$($Installer.FullName).sha256"
+          "$($Hash.Hash.ToLower())  $($Installer.Name)" | Set-Content -Path $ChecksumPath -Encoding ascii
+          "installerName=$($Installer.Name)" >> $env:GITHUB_OUTPUT
+          "installerSha256=$($Hash.Hash.ToLower())" >> $env:GITHUB_OUTPUT
+          Write-Host "Installer: $($Installer.FullName)"
+          Write-Host "SHA-256: $($Hash.Hash.ToLower())"
 
       - name: Write build summary
         run: |
@@ -74,6 +94,8 @@ jobs:
           "- Dock: registered immediately, retried after OBS finishes loading, and available from Docks and Tools" >> $env:GITHUB_STEP_SUMMARY
           "- Probe lifecycle: deferred dedupe on source create/load, exact one video/audio probe only while diagnostics are enabled" >> $env:GITHUB_STEP_SUMMARY
           "- Packaged DLL marker verification: passed" >> $env:GITHUB_STEP_SUMMARY
+          "- Windows installer: ${{ steps.installer.outputs.installerName }}" >> $env:GITHUB_STEP_SUMMARY
+          "- Installer SHA-256: `${{ steps.installer.outputs.installerSha256 }}`" >> $env:GITHUB_STEP_SUMMARY
 
       - name: Upload standard Windows zip
         uses: actions/upload-artifact@v7
@@ -87,4 +109,13 @@ jobs:
         with:
           name: receiver-clock-live-diagnostics-${{ steps.setup.outputs.pluginVersion }}-windows-x64-portable-${{ steps.setup.outputs.shortSha }}
           path: release-portable/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*.zip
+          if-no-files-found: error
+
+      - name: Upload Windows installer EXE
+        uses: actions/upload-artifact@v7
+        with:
+          name: receiver-clock-live-diagnostics-${{ steps.setup.outputs.pluginVersion }}-windows-x64-installer-${{ steps.setup.outputs.shortSha }}
+          path: |
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*-Installer.exe
+            release/${{ steps.setup.outputs.pluginName }}-${{ steps.setup.outputs.pluginVersion }}-windows-x64*-Installer.exe.sha256
           if-no-files-found: error
