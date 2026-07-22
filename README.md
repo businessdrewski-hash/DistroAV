@@ -1,124 +1,105 @@
-> [!CAUTION]
-> This branch is the experimental **DistroAV Receiver Clock Lab 6.2.1.2**, not a production DistroAV release. It adds receiver-paced timestamps, one shared clock for separate receiver-paced NDI sources, automatic unbuffered OBS video in Receiver-Paced mode, and end-to-end diagnostics. Start with the [overview](docs/receiver-clock-lab/README.md), [implementation notes](docs/receiver-clock-lab/IMPLEMENTATION.md), and [test guide](docs/receiver-clock-lab/TESTING.md).
+# DistroAV Receiver Clock Lab — Live Diagnostics Build Package
 
+This package extends the existing `receiver-clock-lab` branch only. It does **not** add Sync Guardian, Multichannel Bridge, PPM correction, resampling, or another clock controller.
 
+## What it adds
 
-<div align="center">
-<h1>DistroAV</h1>
-<h3>Network Audio/Video in OBS-Studio using NDI technology</h3>  
+- An OBS dock named **DistroAV Receiver Clock Health**.
+- Plain-language `GOOD`, `WATCH`, `WARNING`, `WAITING`, and `DATA STALE` states.
+- A live final A/V difference where:
+  - positive means audio appears late relative to video;
+  - negative means video appears late relative to audio.
+- One-minute and ten-minute movement rates in milliseconds per minute.
+- Separate visibility into:
+  - DistroAV output A/V timing;
+  - OBS video-selection/async-queue movement;
+  - OBS audio/filter-path movement;
+  - NDI receive queues and drops;
+  - receiver-clock deadline error and catch-ups;
+  - repeated video identity debt and recovery;
+  - data freshness.
+- One complete OBS log summary per source every second while diagnostics are enabled.
+- Additional event log entries for:
+  - health-state transitions;
+  - NDI queue pressure starting or clearing;
+  - NDI drop counters increasing;
+  - downstream video-gap jumps;
+  - new video-repeat-debt high-water marks.
+- A twelve-hour in-memory flight recorder at one sample per second.
+- Faster live CSV flushing, approximately every four seconds.
+- Automatic removal and recreation of stale/duplicate Clock Lab probe filters when a source loads.
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="./assets/distroav-full-clean-white.svg">
-  <source media="(prefers-color-scheme: light)" srcset="./assets/distroav-full-clean.svg">
-  <img width="650" alt="Fallback DistroAV logo when no light or dark theme is detected" src="./assets/distroav-full-clean.svg">
-</picture>
+## Files to upload
 
-[![GitHub](https://img.shields.io/github/license/DistroAV/DistroAV)](https://github.com/DistroAV/DistroAV/blob/master/LICENSE)
-![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/DistroAV/DistroAV/push.yaml?label=master)
-[![GitHub release (latest by date)](https://img.shields.io/github/v/release/DistroAV/DistroAV)](https://github.com/DistroAV/DistroAV/releases/latest) ![GitHub Release Date](https://img.shields.io/github/release-date/distroav/distroav?display_date=published_at)
+Upload these files to the same paths on the `receiver-clock-lab` branch:
 
-[![Total downloads](https://img.shields.io/github/downloads/DistroAV/DistroAV/total)](https://github.com/DistroAV/DistroAV/releases)
-![Discord](https://img.shields.io/discord/1082173788101279746?style=social&logo=discord&label=Discord&link=https%3A%2F%2Fdiscord.gg%2FZuTxbUK3ug)
-[![Open Collective backers and sponsors](https://opencollective.com/distroav/all/badge.svg?label=Backers&color=brightgreen)](https://opencollective.com/distroav/donate)  
-</div>
-
-## DistroAV Features
-
-### NDI Source
-
-Receive NDI video and audio in OBS
-
-<img width="400" alt="DistroAV-NDI-Source-Feature-Window" src="https://github.com/user-attachments/assets/fe8a3942-b4bf-42b5-84e6-e9971be95216" />
-
-### NDI Output
-
-Transmit OBS video and audio to NDI
-
-<img width="400" alt="DistroAV-NDI-Output-Feature-Window" src="https://github.com/user-attachments/assets/4ee4dd5c-ff95-4b65-a32d-2064eaacc4c2" />
-
-### NDI Filter
-
-(a.k.a. **NDI Dedicated Output**)
-Transmit a single OBS source or scene audio to NDI.
-
-<img width="400" alt="DistroAV-NDI-Filters-Feature-Window" src="https://github.com/user-attachments/assets/6952da7a-a621-4b42-b737-857de83f5615" />
-
-# Installation
-
-Windows ![WinGet Package Version](https://img.shields.io/winget/v/DistroAV.DistroAV)
-```
-winget install --exact --id DistroAV.DistroAV
+```text
+.github/workflows/build-receiver-clock-live-diagnostics.yml
+src/receiver-clock-diagnostics-dock.cpp
+src/receiver-clock-diagnostics-dock.h
+tools/apply-receiver-clock-live-diagnostics.py
 ```
 
-MacOS
+The workflow applies the remaining source edits in its temporary runner checkout. It does not commit those generated edits back to the branch.
+
+## Build on GitHub
+
+1. Upload all four files above while preserving their paths.
+2. Commit them to `receiver-clock-lab`.
+3. Open the repository's **Actions** tab.
+4. Select **Build Receiver Clock Live Diagnostics**.
+5. Choose **Run workflow**.
+6. Download either the standard Windows x64 zip or the portable Windows x64 zip from the run's **Artifacts** section.
+
+The build identifies itself as **DistroAV Receiver Clock Lab 6.2.1.3**.
+
+## Optional: commit the generated C++ edits permanently
+
+From a local checkout of `receiver-clock-lab`, copy the package files into the repository and run:
+
+```powershell
+python .\tools\apply-receiver-clock-live-diagnostics.py
+python .\tools\apply-receiver-clock-live-diagnostics.py --check
+git diff --check
 ```
-brew install --cask distroav/distroav/distroav
+
+The patcher is strict, transactional, and idempotent. It refuses to write anything unless every expected 6.2.1.2 source anchor is present.
+
+## Running the test
+
+1. Install the built zip using the same method as the existing Receiver Clock Lab build.
+2. Start OBS and select **Receiver-Paced** for the NDI source under test.
+3. Enable **Receiver Clock diagnostics** in that source's properties.
+4. Open **Docks → DistroAV Receiver Clock Health**.
+5. Record for the full three-hour test without rebuilding the source.
+6. Save the receiver OBS log and the per-source CSV from the DistroAV plugin configuration folder.
+7. Use **Copy summary** in the dock near the beginning, around each hour, and at the end.
+
+## How to read the likely-cause result
+
+- **OBS audio path growth**: the final drift is appearing after DistroAV output in the post-filter/mixer audio path. This is the primary new measurement for the reported “audio becomes late” symptom.
+- **OBS video queue growth**: submitted video stays aligned, but OBS-selected video moves away from it.
+- **DistroAV output movement**: the relationship is already changing when DistroAV hands media to OBS, so the receiver-clock/output path needs investigation.
+- **NDI receive pressure**: queues and drops suggest the receiver is being starved or overloaded before output.
+- **Large static offset**: the A/V difference is large, but the history does not show continued growth.
+- **Stable or undetermined**: no measured path is growing fast enough to identify a culprit yet.
+
+## Diagnostic files
+
+The existing per-source live CSV remains in the OBS plugin configuration folder and is named from the OBS source UUID:
+
+```text
+receiver-clock-lab-<source-uuid>.csv
 ```
 
+The source-properties export button still writes:
 
-Linux ([Flatpak](https://flatpak.org/)) ![Flathub Version](https://img.shields.io/flathub/v/com.obsproject.Studio.Plugin.DistroAV?link=https%3A%2F%2Fflathub.org%2Fapps%2Fcom.obsproject.Studio.Plugin.DistroAV)
+```text
+receiver-clock-lab.csv
 ```
-flatpak install com.obsproject.Studio com.obsproject.Studio.Plugin.DistroAV
-sudo flatpak override com.obsproject.Studio --system-talk-name=org.freedesktop.Avahi
-```
-Maintained by [tytan652](https://github.com/tytan652)
 
+## Downstream clean-replacement revision
 
-Ubuntu ![Ubuntu Package Version](https://img.shields.io/ubuntu/v/distroav?link=https%3A%2F%2Fpackages.ubuntu.com%2Fsource%2Fresolute%2Fdistroav)
-```
-sudo apt install distroav
-```
-Maintained by [eeickmeyer](https://github.com/eeickmeyer)
-
-Any other options, or errors: See [release page](https://distroav.org/download) and [installation Wiki](https://github.com/DistroAV/DistroAV/wiki/1.-Installation)
-
-## Requirements
-
-* [OBS v31.1.1 or higher](https://github.com/obsproject/obs-studio/releases) (Qt6, x64/ARM64/AppleSilicon)
-* [NDI Runtime v6.3 or higher](https://github.com/DistroAV/DistroAV/wiki/1.-Installation#required---ndi-runtime)
-
-# Troubleshooting
-
-Got a DistroAV Error Code in your OBS log? [See the list of Error Code on the Wiki](https://github.com/DistroAV/DistroAV/wiki/2.-Troubleshooting#error--warning-code---obs-log)
-
-Having trouble with DistroAV? See [Troubleshooting Wiki](https://github.com/DistroAV/DistroAV/wiki/2.-Troubleshooting)
-
-Conflict with OBS-NDI plugin? [Follow the instructions](https://github.com/DistroAV/DistroAV/wiki/OBS%E2%80%90NDI-Is-Now-DistroAV)
-
-# Development
-
-See [Development Wiki](https://github.com/DistroAV/DistroAV/wiki/3.-Development)
-
-**NOTE:** `OBS-NDI` was renamed to `DistroAV` ~2024/06 per [obsproject.com](https://obsproject.com)'s request to drop `OBS` from our name.
-
-# Project Sponsors
-
-<a href="https://distroav.org/sponsors/epeakstudio" target="_blank" rel="noopener">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="https://epeakstudio.com/wp-content/uploads/2020/04/LogoEpeak_BlackBG-thin.png"  width="400" />
-    <source media="(prefers-color-scheme: light)" srcset="https://epeakstudio.com/wp-content/uploads/2024/01/LogoEpeak_WhiteBG-e1756350774910.png"  width="400" />
-    <img alt="EPEAK Studio Logo - DistroAV Sponsor" src="https://epeakstudio.com/wp-content/uploads/2020/04/LogoEpeak_BlackBG-thin.png"  width="400" />
-  </picture>
-</a>
-
-Project Management & Partners Relations & Apple/Microsoft Codesigning & Code contribution & Lab-testing for Release provided by [EPEAK Studio](https://distroav.org/sponsors/epeakstudio) for the official [DistroAV](https://distroav.org/) upstream project.
-
-# Backers (Financial Contributiors)
-
-This project can continue to exists thanks to all the people who help us cover regular expenses. [[Contribute](https://distroav.org/donate)].
-
-[![DistroAV Backers](https://opencollective.com/DistroAV/backers.svg?avatarHeight=36&width=830&button=false)](https://distroav.org/donate)
-
-# Lifetime Code Contributors
-
-This project exists thanks to all the people who contributed code & reviews over the years. [[Contribute as a developer](https://github.com/DistroAV/DistroAV/wiki/3.-Development)].
-
-[![DistroAV code contributors](https://opencollective.com/DistroAV/contributors.svg?button=false&limit=93&width=830)](https://github.com/DistroAV/DistroAV/graphs/contributors)
-
----
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=DistroAV/DistroAV&type=Date&theme=dark" />
-  <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=DistroAV/DistroAV&type=Date" />
-  <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=DistroAV/DistroAV&type=Date" />
-</picture>
+This revision targets `receiver-clock-downstream-diagnostics`, triggers on every
+push to that branch, and accepts either Receiver Clock Lab buildspec `6.2.1.1` or
+`6.2.1.2` as the pre-patch version.
