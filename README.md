@@ -1,108 +1,109 @@
-# DistroAV Receiver Clock Live Diagnostics 6.2.1.4
+# DistroAV Receiver Clock Lab — Live Diagnostics Build Package
 
-This is an upload-and-build overlay for the branch:
+This package extends the existing `receiver-clock-lab` branch only. It does **not** add Sync Guardian, Multichannel Bridge, PPM correction, resampling, or another clock controller.
 
-```text
-receiver-clock-downstream-diagnostics
-```
+## What it adds
 
-It keeps the existing receiver-clock fix. It does not add PPM correction, resampling, Sync Guardian, or another clock-control loop.
-
-## Fixes in this revision
-
-### Live diagnostics dock is registered independently
-
-The dock no longer depends on successful NDI feature registration or on a single OBS finished-loading event.
-
-The build now:
-
-- queues dock registration as soon as the OBS main window is available;
-- retries registration when OBS reports `OBS_FRONTEND_EVENT_FINISHED_LOADING`;
-- automatically shows the dock after registration;
-- adds the normal **Docks → DistroAV Receiver Clock Health** toggle;
-- adds a fallback **Tools → DistroAV Receiver Clock Health** action;
-- retries once after removing a stale plugin-specific dock ID;
-- logs a clear success or failure message.
-
-Expected success log:
-
-```text
-[receiver-clock-lab] Live diagnostics dock registered and available in Docks menu
-```
-
-### Probe-filter replication is repaired
-
-The diagnostic video/audio probes now have a controlled lifecycle:
-
-- diagnostics enabled: exactly one video probe and one audio probe;
-- diagnostics disabled: all Clock Lab probes are removed and none are installed;
-- source create/load: cleanup is deferred to the OBS UI event loop so saved filters have finished restoring first;
-- NDI receiver reset or ordinary source setting reset: probes are not rebuilt;
-- source destruction: every remaining Clock Lab probe is removed by internal filter ID;
-- queued cleanup uses an OBS weak-source reference so a deleted source cannot be accessed later;
-- attached filters do not keep a second source-owned reference.
-
-Expected lifecycle logs include:
-
-```text
-[receiver-clock-lab] Probe reconcile source='...' reason=source-create ...
-[receiver-clock-lab] Probe reconcile source='...' reason=source-load ...
-[receiver-clock-lab] Probe destroy cleanup source='...' ...
-```
+- An OBS dock named **DistroAV Receiver Clock Health**.
+- Plain-language `GOOD`, `WATCH`, `WARNING`, `WAITING`, and `DATA STALE` states.
+- A live final A/V difference where:
+  - positive means audio appears late relative to video;
+  - negative means video appears late relative to audio.
+- One-minute and ten-minute movement rates in milliseconds per minute.
+- Separate visibility into:
+  - DistroAV output A/V timing;
+  - OBS video-selection/async-queue movement;
+  - OBS audio/filter-path movement;
+  - NDI receive queues and drops;
+  - receiver-clock deadline error and catch-ups;
+  - repeated video identity debt and recovery;
+  - data freshness.
+- One complete OBS log summary per source every second while diagnostics are enabled.
+- Additional event log entries for:
+  - health-state transitions;
+  - NDI queue pressure starting or clearing;
+  - NDI drop counters increasing;
+  - downstream video-gap jumps;
+  - new video-repeat-debt high-water marks.
+- A twelve-hour in-memory flight recorder at one sample per second.
+- Faster live CSV flushing, approximately every four seconds.
+- Automatic removal and recreation of stale/duplicate Clock Lab probe filters when a source loads.
 
 ## Files to upload
 
-Extract the ZIP and upload these files while preserving their paths:
+Upload these files to the same paths on the `receiver-clock-lab` branch:
 
 ```text
 .github/workflows/build-receiver-clock-live-diagnostics.yml
 src/receiver-clock-diagnostics-dock.cpp
 src/receiver-clock-diagnostics-dock.h
 tools/apply-receiver-clock-live-diagnostics.py
-tools/verify-receiver-clock-live-diagnostics-build.py
 ```
 
-The other Markdown files are documentation only.
+The workflow applies the remaining source edits in its temporary runner checkout. It does not commit those generated edits back to the branch.
 
-## Build
+## Build on GitHub
 
-1. Open `receiver-clock-downstream-diagnostics` on the GitHub website.
-2. Choose **Add file → Upload files**.
-3. Upload the five operational files above with their folders intact.
-4. Commit directly to `receiver-clock-downstream-diagnostics`.
-5. Open **Actions → Build Receiver Clock Live Diagnostics**.
-6. Open the run triggered by that commit.
-7. Confirm all steps are green, especially:
-   - **Apply live diagnostics and probe lifecycle patch**
-   - **Verify generated source patch**
-   - **Verify diagnostics code is linked into the packaged DLL**
-8. Download an artifact beginning with:
+1. Upload all four files above while preserving their paths.
+2. Commit them to `receiver-clock-lab`.
+3. Open the repository's **Actions** tab.
+4. Select **Build Receiver Clock Live Diagnostics**.
+5. Choose **Run workflow**.
+6. Download the Windows x64 installer artifact, standard ZIP, or portable ZIP from the run's **Artifacts** section.
+
+The build identifies itself as **DistroAV Receiver Clock Lab 6.2.1.4** and produces an Inno Setup Windows installer EXE.
+
+## Optional: commit the generated C++ edits permanently
+
+From a local checkout of `receiver-clock-lab`, copy the package files into the repository and run:
+
+```powershell
+python .\tools\apply-receiver-clock-live-diagnostics.py
+python .\tools\apply-receiver-clock-live-diagnostics.py --check
+git diff --check
+```
+
+The patcher is strict, transactional, and idempotent. It refuses to write anything unless every expected 6.2.1.2 source anchor is present.
+
+## Running the test
+
+1. Install the built zip using the same method as the existing Receiver Clock Lab build.
+2. Start OBS and select **Receiver-Paced** for the NDI source under test.
+3. Enable **Receiver Clock diagnostics** in that source's properties.
+4. Open **Docks → DistroAV Receiver Clock Health**.
+5. Record for the full three-hour test without rebuilding the source.
+6. Save the receiver OBS log and the per-source CSV from the DistroAV plugin configuration folder.
+7. Use **Copy summary** in the dock near the beginning, around each hour, and at the end.
+
+## How to read the likely-cause result
+
+- **OBS audio path growth**: the final drift is appearing after DistroAV output in the post-filter/mixer audio path. This is the primary new measurement for the reported “audio becomes late” symptom.
+- **OBS video queue growth**: submitted video stays aligned, but OBS-selected video moves away from it.
+- **DistroAV output movement**: the relationship is already changing when DistroAV hands media to OBS, so the receiver-clock/output path needs investigation.
+- **NDI receive pressure**: queues and drops suggest the receiver is being starved or overloaded before output.
+- **Large static offset**: the A/V difference is large, but the history does not show continued growth.
+- **Stable or undetermined**: no measured path is growing fast enough to identify a culprit yet.
+
+## Diagnostic files
+
+The existing per-source live CSV remains in the OBS plugin configuration folder and is named from the OBS source UUID:
 
 ```text
-receiver-clock-live-diagnostics-6.2.1.4-
+receiver-clock-lab-<source-uuid>.csv
 ```
 
-Do not use an artifact from the generic **Build Project** workflow.
-
-## Install and verify in OBS
-
-1. Fully exit OBS, including its system-tray process.
-2. Install or copy the downloaded 6.2.1.4 artifact over the previous test build.
-3. Start OBS.
-4. Look for the dock immediately.
-5. If it is not open, use either:
-   - **Docks → DistroAV Receiver Clock Health**
-   - **Tools → DistroAV Receiver Clock Health**
-6. Open the NDI source properties and enable **Receiver Clock diagnostics**.
-7. Open the source’s Filters window:
-   - diagnostics on should settle at exactly two Clock Lab probes;
-   - diagnostics off should settle at zero Clock Lab probes;
-   - changing latency, clock mode, or resetting the NDI receiver should not add more probes.
-
-## Build identity
+The source-properties export button still writes:
 
 ```text
-DistroAV Receiver Clock Lab 6.2.1.4
+receiver-clock-lab.csv
 ```
 
-The GitHub workflow patches only its temporary checkout. It does not commit generated C++ changes back to the branch.
+## Downstream clean-replacement revision
+
+This revision targets `receiver-clock-downstream-diagnostics`, triggers on every
+push to that branch, and accepts either Receiver Clock Lab buildspec `6.2.1.1` or
+`6.2.1.2` as the pre-patch version.
+
+## Installer artifact
+
+The workflow now uploads a separate artifact named with `windows-x64-installer`. GitHub wraps artifacts in a ZIP for download; extract it to obtain the actual `*-Installer.exe` and its SHA-256 checksum. The experimental installer is not Authenticode-signed, so Windows SmartScreen may display a warning.

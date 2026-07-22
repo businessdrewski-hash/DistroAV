@@ -24,3 +24,7 @@ A correct artifact name begins with:
 ```text
 receiver-clock-live-diagnostics-6.2.1.4-
 ```
+
+## Installer
+
+After the workflow succeeds, download the artifact with `windows-x64-installer` in its name. Extract the GitHub artifact ZIP and run the enclosed `*-Installer.exe`.
