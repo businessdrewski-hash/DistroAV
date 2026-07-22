@@ -10,6 +10,7 @@
 #include <QClipboard>
 #include <QComboBox>
 #include <QDesktopServices>
+#include <QDockWidget>
 #include <QFont>
 #include <QGridLayout>
 #include <QGroupBox>
@@ -444,25 +445,61 @@ private:
 
 void receiver_clock_diagnostics_dock_init(QMainWindow *main_window)
 {
-	if (!main_window || dock_widget)
-		return;
-
-	auto *widget = new ReceiverClockDiagnosticsDock(main_window);
-	if (!obs_frontend_add_dock_by_id(kDockId, kDockTitle, widget)) {
-		delete widget;
-		obs_log(LOG_WARNING, "[receiver-clock-lab] Could not add diagnostics dock; dock id already exists");
+	if (!main_window) {
+		obs_log(LOG_WARNING, "[receiver-clock-lab] Could not register diagnostics dock: no OBS main window");
 		return;
 	}
+	if (dock_widget) {
+		receiver_clock_diagnostics_dock_show();
+		return;
+	}
+
+	auto *widget = new ReceiverClockDiagnosticsDock(main_window);
+	bool added = obs_frontend_add_dock_by_id(kDockId, kDockTitle, widget);
+	if (!added) {
+		// Recover from a stale id left by an earlier in-process test build. The id is
+		// plugin-specific, so removing it cannot target an unrelated OBS dock.
+		obs_log(LOG_WARNING, "[receiver-clock-lab] Diagnostics dock id already existed; removing stale dock and retrying");
+		obs_frontend_remove_dock(kDockId);
+		added = obs_frontend_add_dock_by_id(kDockId, kDockTitle, widget);
+	}
+	if (!added) {
+		delete widget;
+		obs_log(LOG_ERROR, "[receiver-clock-lab] Could not add diagnostics dock after retry");
+		return;
+	}
+
 	dock_widget = widget;
-	obs_log(LOG_INFO, "[receiver-clock-lab] Live diagnostics dock registered");
+	obs_log(LOG_INFO, "[receiver-clock-lab] Live diagnostics dock registered and available in Docks menu");
+	receiver_clock_diagnostics_dock_show();
+}
+
+void receiver_clock_diagnostics_dock_show()
+{
+	if (!dock_widget)
+		return;
+
+	for (QWidget *ancestor = dock_widget->parentWidget(); ancestor; ancestor = ancestor->parentWidget()) {
+		if (auto *dock = qobject_cast<QDockWidget *>(ancestor)) {
+			dock->show();
+			dock->raise();
+			dock->activateWindow();
+			return;
+		}
+	}
+
+	// Defensive fallback if OBS changes the wrapper hierarchy.
+	dock_widget->show();
+	dock_widget->raise();
 }
 
 void receiver_clock_diagnostics_dock_deinit()
 {
 	if (!dock_widget)
 		return;
-	obs_frontend_remove_dock(kDockId);
-	if (dock_widget)
-		dock_widget->deleteLater();
+	QPointer<QWidget> widget = dock_widget;
 	dock_widget.clear();
+	obs_frontend_remove_dock(kDockId);
+	if (widget)
+		widget->deleteLater();
 }

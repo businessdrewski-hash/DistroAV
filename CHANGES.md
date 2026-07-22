@@ -1,19 +1,30 @@
-# Implementation summary
+# 6.2.1.4 changes
 
-## Suspected failure path instrumented
+## Dock visibility
 
-The strongest current hypothesis is not a second clock-rate divergence. It is growing latency after the receiver-owned timestamps are generated. The new build therefore measures three boundaries independently:
+- Registers the dock immediately through the OBS main-window event queue.
+- Retries after `OBS_FRONTEND_EVENT_FINISHED_LOADING`.
+- Removes the previous dependency on `plugin_features_registered` for dock creation.
+- Automatically shows the registered dock.
+- Adds a Tools-menu fallback action.
+- Recovers once from a stale plugin-specific dock ID.
+- Adds packaged-DLL marker verification to CI so a successful artifact cannot silently omit the dock code.
 
-1. DistroAV output video versus DistroAV output audio.
-2. OBS-selected video versus DistroAV-submitted video.
-3. OBS post-filter audio versus DistroAV-submitted audio.
+## Filter lifecycle
 
-The final OBS-side relationship is then measured as OBS-selected video versus post-filter audio. Ten-minute history identifies which boundary is actually moving.
+- Replaces unconditional probe rebuilding with deferred reconciliation.
+- Removes every existing diagnostic probe by internal source ID before installing anything.
+- Installs one video and one audio probe only when diagnostics are enabled.
+- Installs no probes when diagnostics are disabled.
+- Does not reconcile probes for ordinary NDI receiver resets or unrelated source updates.
+- Defers create/load reconciliation until saved OBS filters have been restored.
+- Uses weak source references for queued work.
+- Releases the creator reference immediately after attaching each private filter.
+- Performs full by-ID cleanup when the NDI source is destroyed.
 
-## No timing behavior added
+## Diagnostics retained
 
-The patch does not alter receiver-paced timestamp generation, audio sample accounting, rational video tick generation, the shared process epoch, or OBS async-unbuffered behavior. All new code is observation, presentation, logging, registry access, or diagnostic-filter lifecycle repair.
-
-## Sampling and retention
-
-The existing 250 ms recorder is changed to one second because the requested test is several hours long and sub-second diagnostic resolution is unnecessary. The existing 43,200-row capacity therefore retains approximately twelve hours instead of three hours.
+- One-second sampling.
+- Approximately twelve hours of in-memory history.
+- Live dock with final A/V, output A/V, OBS video path, OBS audio path, trends, queues, drops, deadlines, catch-ups, repeat debt, and likely-cause text.
+- No PPM controller, resampler, or clock-rate correction.

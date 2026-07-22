@@ -2,7 +2,7 @@
 """Apply the Receiver Clock Lab live diagnostics extension.
 
 This patcher is intentionally strict: it only modifies the known
-receiver-clock-lab 6.2.1.2 source layout, and it is idempotent.
+receiver-clock-lab 6.2.1.1/6.2.1.2 source layout, and it is idempotent.
 """
 
 from __future__ import annotations
@@ -221,9 +221,23 @@ def patch_diagnostics_cpp(text: str) -> str:
 def patch_ndi_source(text: str) -> str:
     text = replace_once(
         text,
+        "#include <QDesktopServices>\n#include <QUrl>\n",
+        "#include <QCoreApplication>\n#include <QDesktopServices>\n#include <QTimer>\n#include <QUrl>\n",
+        "Qt probe lifecycle includes",
+    )
+    text = replace_once(
+        text,
         "#include <unordered_map>\n",
         "#include <unordered_map>\n#include <vector>\n",
         "vector include",
+    )
+    text = replace_once(
+        text,
+        "\tobs_source_t *clock_video_probe;\n\tobs_source_t *clock_audio_probe;\n",
+        "\tobs_source_t *clock_video_probe;\n"
+        "\tobs_source_t *clock_audio_probe;\n"
+        "\tbool clock_probe_lifecycle_ready;\n",
+        "probe lifecycle state",
     )
     text = replace_once(
         text,
@@ -331,7 +345,7 @@ std::vector<RegisteredLiveSnapshot> registered_live_snapshots(uint64_t wall_ns)
     probe_helpers = r'''
 static size_t remove_clocklab_probes_by_id(obs_source_t *parent, const char *id)
 {
-	if (!parent)
+	if (!parent || !id)
 		return 0;
 	struct ProbeList {
 		const char *id;
@@ -355,26 +369,71 @@ static size_t remove_clocklab_probes_by_id(obs_source_t *parent, const char *id)
 	return list.filters.size();
 }
 
-static void reset_clocklab_probes(ndi_source_t *source)
+static bool add_clocklab_probe(obs_source_t *parent, const char *id, const char *name, uint64_t token)
 {
-	if (!source || !source->obs_source)
+	obs_source_t *filter = install_clocklab_probe(parent, id, name, token);
+	if (!filter)
+		return false;
+	// The parent owns the attached-filter reference. Do not retain a second
+	// source-owned reference that can survive resets or be released twice.
+	obs_source_release(filter);
+	return true;
+}
+
+static void reconcile_clocklab_probes(obs_source_t *parent, uint64_t token, bool enabled, const char *reason)
+{
+	if (!parent)
 		return;
-	remove_clocklab_probe(source->obs_source, source->clock_video_probe);
-	remove_clocklab_probe(source->obs_source, source->clock_audio_probe);
-	source->clock_video_probe = nullptr;
-	source->clock_audio_probe = nullptr;
-	const size_t stale_video = remove_clocklab_probes_by_id(source->obs_source, CLOCKLAB_VIDEO_PROBE_ID);
-	const size_t stale_audio = remove_clocklab_probes_by_id(source->obs_source, CLOCKLAB_AUDIO_PROBE_ID);
-	source->clock_video_probe = install_clocklab_probe(source->obs_source, CLOCKLAB_VIDEO_PROBE_ID,
-							   "DistroAV Receiver Clock Video Probe",
-							   source->clock_diagnostics_token);
-	source->clock_audio_probe = install_clocklab_probe(source->obs_source, CLOCKLAB_AUDIO_PROBE_ID,
-							   "DistroAV Receiver Clock Audio Probe",
-							   source->clock_diagnostics_token);
+
+	// Always collapse every persisted or stale copy first. Receiver resets do
+	// not call this function; only create/load and a diagnostics on/off change do.
+	const size_t removed_video = remove_clocklab_probes_by_id(parent, CLOCKLAB_VIDEO_PROBE_ID);
+	const size_t removed_audio = remove_clocklab_probes_by_id(parent, CLOCKLAB_AUDIO_PROBE_ID);
+
+	bool video_ready = false;
+	bool audio_ready = false;
+	if (enabled && token) {
+		video_ready = add_clocklab_probe(parent, CLOCKLAB_VIDEO_PROBE_ID,
+					   "DistroAV Receiver Clock Video Probe", token);
+		audio_ready = add_clocklab_probe(parent, CLOCKLAB_AUDIO_PROBE_ID,
+					   "DistroAV Receiver Clock Audio Probe", token);
+	}
+
 	obs_log(LOG_INFO,
-		"[receiver-clock-lab] Probe reset source='%s' removed_stale_video=%zu removed_stale_audio=%zu video=%s audio=%s",
-		obs_source_get_name(source->obs_source), stale_video, stale_audio,
-		source->clock_video_probe ? "ready" : "failed", source->clock_audio_probe ? "ready" : "failed");
+		"[receiver-clock-lab] Probe reconcile source='%s' reason=%s enabled=%s removed_video=%zu removed_audio=%zu video=%s audio=%s",
+		obs_source_get_name(parent), reason ? reason : "unknown", enabled ? "true" : "false",
+		removed_video, removed_audio, video_ready ? "ready" : (enabled ? "failed" : "off"),
+		audio_ready ? "ready" : (enabled ? "failed" : "off"));
+}
+
+static void schedule_clocklab_probe_reconcile(obs_source_t *parent, uint64_t token, bool enabled,
+					      const char *reason)
+{
+	if (!parent)
+		return;
+
+	obs_weak_source_t *weak = obs_source_get_weak_source(parent);
+	if (!weak)
+		return;
+	const std::string reason_copy = reason ? reason : "scheduled";
+	QCoreApplication *app = QCoreApplication::instance();
+	if (!app) {
+		reconcile_clocklab_probes(parent, token, enabled, reason_copy.c_str());
+		obs_weak_source_release(weak);
+		return;
+	}
+
+	// Defer until the UI event loop so OBS has finished restoring any saved
+	// filters. A weak source prevents a queued callback from touching a source
+	// that was deleted before it ran.
+	QTimer::singleShot(0, app, [weak, token, enabled, reason_copy] {
+		obs_source_t *strong = obs_weak_source_get_source(weak);
+		if (strong) {
+			reconcile_clocklab_probes(strong, token, enabled, reason_copy.c_str());
+			obs_source_release(strong);
+		}
+		obs_weak_source_release(weak);
+	});
 }
 '''
     text = replace_once(
@@ -595,6 +654,29 @@ static const char *clocklab_likely_cause(const distroav::clocklab::LiveSnapshot 
 
     text = replace_once(
         text,
+        "\tconst bool diagnostics_enabled = obs_data_get_bool(settings, PROP_CLOCK_DIAGNOSTICS);\n"
+        "\tif (s->clock_diagnostics) {\n"
+        "\t\ts->clock_diagnostics->set_enabled(diagnostics_enabled, os_gettime_ns());\n"
+        "\t\tif (old_receiver_clock_mode != new_receiver_clock_mode)\n"
+        "\t\t\ts->clock_diagnostics->mark_event(distroav::clocklab::Event::ModeChanged, os_gettime_ns());\n"
+        "\t}\n"
+        "\ts->config.clock_diagnostics_enabled = diagnostics_enabled;",
+        "\tconst bool old_diagnostics_enabled = s->config.clock_diagnostics_enabled;\n"
+        "\tconst bool diagnostics_enabled = obs_data_get_bool(settings, PROP_CLOCK_DIAGNOSTICS);\n"
+        "\tif (s->clock_diagnostics) {\n"
+        "\t\ts->clock_diagnostics->set_enabled(diagnostics_enabled, os_gettime_ns());\n"
+        "\t\tif (old_receiver_clock_mode != new_receiver_clock_mode)\n"
+        "\t\t\ts->clock_diagnostics->mark_event(distroav::clocklab::Event::ModeChanged, os_gettime_ns());\n"
+        "\t}\n"
+        "\ts->config.clock_diagnostics_enabled = diagnostics_enabled;\n"
+        "\tif (s->clock_probe_lifecycle_ready && old_diagnostics_enabled != diagnostics_enabled)\n"
+        "\t\tschedule_clocklab_probe_reconcile(s->obs_source, s->clock_diagnostics_token, diagnostics_enabled,\n"
+        "\t\t\t\t\t  \"diagnostics-toggle\");",
+        "diagnostics toggle probe lifecycle",
+    )
+
+    text = replace_once(
+        text,
         "s->clock_diagnostics_token = register_clocklab_diagnostics(*s->clock_diagnostics_owner);",
         "s->clock_diagnostics_token = register_clocklab_diagnostics(*s->clock_diagnostics_owner, obs_source_name);",
         "registry source name",
@@ -609,7 +691,9 @@ static const char *clocklab_likely_cause(const distroav::clocklab::LiveSnapshot 
     )
 
     new_install = r'''	ndi_source_update(s, settings);
-	reset_clocklab_probes(s);
+	s->clock_probe_lifecycle_ready = true;
+	schedule_clocklab_probe_reconcile(s->obs_source, s->clock_diagnostics_token,
+					  s->config.clock_diagnostics_enabled, "source-create");
 '''
     text = replace_regex_once(
         text,
@@ -626,11 +710,31 @@ static const char *clocklab_likely_cause(const distroav::clocklab::LiveSnapshot 
         "void ndi_source_destroy(void *data)\n{",
         "void ndi_source_load(void *data, obs_data_t *)\n{\n"
         "\tauto *source = static_cast<ndi_source_t *>(data);\n"
-        "\treset_clocklab_probes(source);\n"
+        "\tschedule_clocklab_probe_reconcile(source->obs_source, source->clock_diagnostics_token,\n"
+        "\t\t\t\t\t  source->config.clock_diagnostics_enabled, \"source-load\");\n"
         "}\n\n"
         "void ndi_source_destroy(void *data)\n{",
         "source load repair",
     )
+    text = replace_once(
+        text,
+        "\tndi_source_thread_stop(s);\n"
+        "\tremove_clocklab_probe(s->obs_source, s->clock_video_probe);\n"
+        "\tremove_clocklab_probe(s->obs_source, s->clock_audio_probe);\n"
+        "\ts->clock_video_probe = nullptr;\n"
+        "\ts->clock_audio_probe = nullptr;",
+        "\tndi_source_thread_stop(s);\n"
+        "\ts->clock_probe_lifecycle_ready = false;\n"
+        "\tconst size_t removed_video_probes = remove_clocklab_probes_by_id(s->obs_source, CLOCKLAB_VIDEO_PROBE_ID);\n"
+        "\tconst size_t removed_audio_probes = remove_clocklab_probes_by_id(s->obs_source, CLOCKLAB_AUDIO_PROBE_ID);\n"
+        "\ts->clock_video_probe = nullptr;\n"
+        "\ts->clock_audio_probe = nullptr;\n"
+        "\tobs_log(LOG_INFO,\n"
+        "\t\t\"[receiver-clock-lab] Probe destroy cleanup source='%s' removed_video=%zu removed_audio=%zu\",\n"
+        "\t\tobs_source_name, removed_video_probes, removed_audio_probes);",
+        "destroy probe cleanup",
+    )
+
     text = replace_once(
         text,
         "\tndi_source_info.update = ndi_source_update;\n\tndi_source_info.hide = ndi_source_hidden;",
@@ -649,22 +753,66 @@ def patch_plugin_main(text: str) -> str:
         '#include "preview-output.h"\n#include "receiver-clock-diagnostics-dock.h"\n',
         "dock include",
     )
-    old_init = r'''					QMetaObject::invokeMethod(
-						main_window,
-						[] {
-							main_output_init();
-							preview_output_init();
-						},
-						Qt::QueuedConnection);'''
-    new_init = r'''					QMetaObject::invokeMethod(
-						main_window,
-						[main_window] {
-							main_output_init();
-							preview_output_init();
-							receiver_clock_diagnostics_dock_init(main_window);
-						},
-						Qt::QueuedConnection);'''
-    text = replace_once(text, old_init, new_init, "dock initialization")
+    text = replace_once(
+        text,
+        "static bool plugin_features_registered = false;\n",
+        "static bool plugin_features_registered = false;\n\n"
+        "static void queue_receiver_clock_diagnostics_dock(QMainWindow *main_window)\n"
+        "{\n"
+        "\tif (!main_window) {\n"
+        "\t\tobs_log(LOG_WARNING, \"[receiver-clock-lab] Diagnostics dock registration skipped: no OBS main window\");\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\tQMetaObject::invokeMethod(\n"
+        "\t\tmain_window, [main_window] { receiver_clock_diagnostics_dock_init(main_window); },\n"
+        "\t\tQt::QueuedConnection);\n"
+        "}\n",
+        "dock queue helper",
+    )
+    text = replace_once(
+        text,
+        "\tif (main_window) {\n\t\tauto menu_action = static_cast<QAction *>(",
+        "\tif (main_window) {\n"
+        "\t\t// Register immediately and retry after OBS reports finished loading. The dock is\n"
+        "\t\t// diagnostic UI and must not depend on the NDI runtime feature-registration path.\n"
+        "\t\tqueue_receiver_clock_diagnostics_dock(main_window);\n\n"
+        "\t\tauto menu_action = static_cast<QAction *>(",
+        "immediate dock registration",
+    )
+    text = replace_once(
+        text,
+        "\t\tmenu_action->connect(menu_action, &QAction::triggered, menu_cb);\n\n"
+        "\t\tobs_frontend_add_event_callback(",
+        "\t\tmenu_action->connect(menu_action, &QAction::triggered, menu_cb);\n\n"
+        "\t\tauto diagnostics_menu_action = static_cast<QAction *>(\n"
+        "\t\t\tobs_frontend_add_tools_menu_qaction(\"DistroAV Receiver Clock Health\"));\n"
+        "\t\tif (diagnostics_menu_action) {\n"
+        "\t\t\tdiagnostics_menu_action->connect(\n"
+        "\t\t\t\tdiagnostics_menu_action, &QAction::triggered, [main_window] {\n"
+        "\t\t\t\t\treceiver_clock_diagnostics_dock_init(main_window);\n"
+        "\t\t\t\t\treceiver_clock_diagnostics_dock_show();\n"
+        "\t\t\t\t});\n"
+        "\t\t}\n\n"
+        "\t\tobs_frontend_add_event_callback(",
+        "diagnostics tools menu fallback",
+    )
+    text = replace_once(
+        text,
+        "\t\t\t\tif (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {\n"
+        "\t\t\t\t\tif (!plugin_features_registered) {",
+        "\t\t\t\tif (event == OBS_FRONTEND_EVENT_FINISHED_LOADING) {\n"
+        "\t\t\t\t\tauto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());\n"
+        "\t\t\t\t\tqueue_receiver_clock_diagnostics_dock(main_window);\n"
+        "\t\t\t\t\tif (!plugin_features_registered) {",
+        "finished-loading dock retry",
+    )
+    text = replace_once(
+        text,
+        "\n\t\t\t\t\tauto main_window = static_cast<QMainWindow *>(obs_frontend_get_main_window());\n"
+        "\t\t\t\t\tQMetaObject::invokeMethod(",
+        "\n\t\t\t\t\tQMetaObject::invokeMethod(",
+        "remove duplicate main-window lookup",
+    )
     text = replace_once(
         text,
         "\t\t\t\t} else if (event == OBS_FRONTEND_EVENT_EXIT) {\n"
@@ -701,25 +849,31 @@ def patch_cmake(text: str) -> str:
 
 
 def patch_buildspec(text: str) -> str:
-    
-    if '"version": "6.2.1.3"' in text:
+    if '"version": "6.2.1.4"' in text:
         return text
-    matches = list(re.finditer(r'"version"\s*:\s*"6\.2\.1\.(?:1|2)"', text))
+    matches = list(re.finditer(r'"version"\s*:\s*"6\.2\.1\.(?:1|2|3)"', text))
     if len(matches) != 1:
-        raise PatchError(f"diagnostics build version: expected exactly one 6.2.1.1 or 6.2.1.2 anchor, found {len(matches)}")
-    return re.sub(r'"version"\s*:\s*"6\.2\.1\.(?:1|2)"', '"version": "6.2.1.3"', text, count=1)
+        raise PatchError(
+            f"diagnostics build version: expected exactly one 6.2.1.1, 6.2.1.2, or 6.2.1.3 anchor, found {len(matches)}"
+        )
+    return re.sub(
+        r'"version"\s*:\s*"6\.2\.1\.(?:1|2|3)"',
+        '"version": "6.2.1.4"',
+        text,
+        count=1,
+    )
 
 
 def check_applied(root: Path) -> list[str]:
     checks = {
         root / "src/receiver-clock-diagnostics.h": "struct LiveSnapshot",
         root / "src/receiver-clock-diagnostics.cpp": "LiveSnapshot Diagnostics::live_snapshot",
-        root / "src/ndi-source.cpp": "likely_cause=%s",
-        root / "src/plugin-main.cpp": "receiver_clock_diagnostics_dock_init(main_window)",
+        root / "src/ndi-source.cpp": "schedule_clocklab_probe_reconcile",
+        root / "src/plugin-main.cpp": "queue_receiver_clock_diagnostics_dock",
         root / "CMakeLists.txt": "src/receiver-clock-diagnostics-dock.cpp",
-        root / "buildspec.json": '"version": "6.2.1.3"',
-        root / "src/receiver-clock-diagnostics-dock.cpp": "ReceiverClockDiagnosticsDock",
-        root / "src/receiver-clock-diagnostics-dock.h": "receiver_clock_diagnostics_dock_init",
+        root / "buildspec.json": '"version": "6.2.1.4"',
+        root / "src/receiver-clock-diagnostics-dock.cpp": "receiver_clock_diagnostics_dock_show",
+        root / "src/receiver-clock-diagnostics-dock.h": "receiver_clock_diagnostics_dock_show",
     }
     missing: list[str] = []
     for path, marker in checks.items():
@@ -757,10 +911,10 @@ def main() -> int:
     operations = [
         (root / "src/receiver-clock-diagnostics.h", "struct LiveSnapshot", patch_header),
         (root / "src/receiver-clock-diagnostics.cpp", "LiveSnapshot Diagnostics::live_snapshot", patch_diagnostics_cpp),
-        (root / "src/ndi-source.cpp", "likely_cause=%s", patch_ndi_source),
-        (root / "src/plugin-main.cpp", "receiver_clock_diagnostics_dock_init(main_window)", patch_plugin_main),
+        (root / "src/ndi-source.cpp", "schedule_clocklab_probe_reconcile", patch_ndi_source),
+        (root / "src/plugin-main.cpp", "queue_receiver_clock_diagnostics_dock", patch_plugin_main),
         (root / "CMakeLists.txt", "src/receiver-clock-diagnostics-dock.cpp", patch_cmake),
-        (root / "buildspec.json", '"version": "6.2.1.3"', patch_buildspec),
+        (root / "buildspec.json", '"version": "6.2.1.4"', patch_buildspec),
     ]
     prepared: list[tuple[Path, str]] = []
     for path, marker, transform in operations:
